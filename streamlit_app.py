@@ -1,6 +1,6 @@
 """
 Streamlit Interactive Relationship Graph Visualization
-Click to expand node relationships dynamically
+Click nodes directly in the graph to expand their relationships
 
 Install: pip install streamlit pyvis networkx pandas
 Run: streamlit run streamlit_app.py
@@ -27,6 +27,8 @@ if 'expanded_nodes' not in st.session_state:
     st.session_state.expanded_nodes = set()
 if 'selected_entity' not in st.session_state:
     st.session_state.selected_entity = None
+if 'graph_html' not in st.session_state:
+    st.session_state.graph_html = None
 
 # ============= Data Loading =============
 @st.cache_data
@@ -50,14 +52,13 @@ def load_graph_from_csv(csv_file):
     entity_types = {}
     
     # Detect entity types (check if 'entity_type' column exists)
-    if 'entity_type' in df.columns:
+    if 'entity_type_from' in df.columns and 'entity_type_to' in df.columns:
         for _, row in df.iterrows():
             entity_types[row['entity_from']] = row.get('entity_type_from', 'company')
             entity_types[row['entity_to']] = row.get('entity_type_to', 'company')
     else:
         # Auto-detect based on common patterns
         for _, row in df.iterrows():
-            # Simple heuristic: if name contains common person indicators
             entity_types[row['entity_from']] = detect_entity_type(row['entity_from'])
             entity_types[row['entity_to']] = detect_entity_type(row['entity_to'])
     
@@ -111,6 +112,9 @@ def get_relationship_color(relationship_sub_type):
         'private_equity': '#2563eb',
         'control': '#ec4899',
         'subsidiary': '#f43f5e',
+        'shareholder': '#f87171',
+        'auditor': '#22d3ee',
+        'multiple': '#000000',
     }
     
     # Return predefined color or generate hash-based color
@@ -145,31 +149,37 @@ def get_node_icon(entity_type):
             }
         }
 
-def create_expandable_graph(G, entity_types, expanded_nodes, root_entity=None):
-    """Generate interactive expandable graph"""
-    if not root_entity:
+def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
+    """Generate interactive graph with click-to-expand functionality"""
+    if not root_entity or root_entity not in G:
         return None
     
-    # Start with root entity and expanded nodes
-    nodes_to_show = expanded_nodes.copy()
-    nodes_to_show.add(root_entity)
-    
-    # Get all edges between visible nodes
+    # Get all nodes to display (expanded nodes and their connections)
+    nodes_to_show = set()
     edges_to_show = []
-    for node in nodes_to_show:
+    
+    for node in expanded_nodes:
         if node in G:
-            # Outgoing edges
-            for successor in G.successors(node):
-                if successor in nodes_to_show:
-                    edges_to_show.append((node, successor))
+            nodes_to_show.add(node)
+            # Get all neighbors (both incoming and outgoing)
+            neighbors = set(G.successors(node)) | set(G.predecessors(node))
+            nodes_to_show.update(neighbors)
+            
+            # Add edges from this node to its neighbors
+            for neighbor in G.successors(node):
+                edges_to_show.append((node, neighbor))
+            for neighbor in G.predecessors(node):
+                edges_to_show.append((neighbor, node))
     
     # Create subgraph
     subgraph = nx.DiGraph()
     for edge in edges_to_show:
-        edge_data = G.get_edge_data(edge[0], edge[1])
-        subgraph.add_edge(edge[0], edge[1], **edge_data)
+        if edge[0] in nodes_to_show and edge[1] in nodes_to_show:
+            edge_data = G.get_edge_data(edge[0], edge[1])
+            if edge_data:
+                subgraph.add_edge(edge[0], edge[1], **edge_data)
     
-    # Add isolated root if needed
+    # Ensure root is in graph even if isolated
     if root_entity not in subgraph:
         subgraph.add_node(root_entity)
     
@@ -179,7 +189,10 @@ def create_expandable_graph(G, entity_types, expanded_nodes, root_entity=None):
         width="100%",
         bgcolor="#ffffff",
         font_color="black",
-        directed=True
+        directed=True,
+        notebook=False,
+        select_menu=False,
+        filter_menu=False
     )
     
     # Add nodes with icons
@@ -187,12 +200,20 @@ def create_expandable_graph(G, entity_types, expanded_nodes, root_entity=None):
         entity_type = entity_types.get(node, 'company')
         icon_config = get_node_icon(entity_type)
         
+        is_expanded = node in expanded_nodes
+        is_root = node == root_entity
+        
+        # Different sizes and styling for expanded vs unexpanded nodes
+        size = 35 if is_root else (28 if is_expanded else 25)
+        
         net.add_node(
             node,
             label=node,
-            title=f"{node} ({entity_type})\nClick to expand",
+            title=f"{node} ({entity_type})\n{'✓ Expanded' if is_expanded else 'Click to expand'}",
             **icon_config,
-            size=30 if node == root_entity else 25
+            size=size,
+            borderWidth=3 if is_expanded else 1,
+            borderWidthSelected=5
         )
     
     # Add edges with labels and colors
@@ -211,34 +232,38 @@ def create_expandable_graph(G, entity_types, expanded_nodes, root_entity=None):
             color=color,
             arrows='to',
             width=2,
-            font={'size': 12, 'align': 'middle'}
+            font={'size': 12, 'align': 'middle', 'strokeWidth': 0}
         )
     
-    # Set physics options
+    # Set physics and interaction options
     net.set_options("""
     {
       "physics": {
         "enabled": true,
         "barnesHut": {
-          "gravitationalConstant": -15000,
+          "gravitationalConstant": -20000,
           "centralGravity": 0.3,
-          "springLength": 150,
-          "springConstant": 0.04
+          "springLength": 200,
+          "springConstant": 0.04,
+          "damping": 0.5
         },
         "stabilization": {
-          "iterations": 200
+          "iterations": 300,
+          "fit": true
         }
       },
       "interaction": {
         "hover": true,
         "zoomView": true,
         "dragView": true,
-        "navigationButtons": true
+        "navigationButtons": true,
+        "tooltipDelay": 200
       },
       "edges": {
         "smooth": {
           "type": "cubicBezier",
-          "forceDirection": "horizontal"
+          "forceDirection": "horizontal",
+          "roundness": 0.5
         }
       }
     }
@@ -281,7 +306,8 @@ def create_radial_map(G, entity_types, entity, depth=2):
             label=node,
             title=f"{node} ({entity_type})",
             **icon_config,
-            size=35 if is_center else 25
+            size=35 if is_center else 25,
+            borderWidth=3 if is_center else 1
         )
     
     # Add edges with labels and colors
@@ -308,9 +334,13 @@ def create_radial_map(G, entity_types, entity, depth=2):
       "physics": {
         "enabled": true,
         "barnesHut": {
-          "gravitationalConstant": -15000,
+          "gravitationalConstant": -18000,
           "centralGravity": 0.3,
-          "springLength": 150
+          "springLength": 180,
+          "damping": 0.5
+        },
+        "stabilization": {
+          "iterations": 250
         }
       },
       "interaction": {
@@ -361,18 +391,21 @@ def create_interconnection_map(G, entity_types, entities):
             label=node,
             title=f"{node} ({entity_type})",
             **icon_config,
-            size=30 if is_selected else 20
+            size=30 if is_selected else 20,
+            borderWidth=3 if is_selected else 1
         )
     
     # Add edges
     for edge in subgraph.edges():
         edge_data = G.get_edge_data(edge[0], edge[1])
         rel_sub_type = edge_data.get('relationship_sub_type', '')
+        rel_type = edge_data.get('relationship_type', '')
         
         net.add_edge(
             edge[0],
             edge[1],
             label=rel_sub_type,
+            title=f"{rel_type}: {rel_sub_type}",
             color=get_relationship_color(rel_sub_type),
             arrows='to',
             width=2,
@@ -384,9 +417,9 @@ def create_interconnection_map(G, entity_types, entities):
       "physics": {
         "enabled": true,
         "barnesHut": {
-          "gravitationalConstant": -12000,
+          "gravitationalConstant": -15000,
           "centralGravity": 0.3,
-          "springLength": 180
+          "springLength": 200
         }
       },
       "interaction": {
@@ -403,7 +436,7 @@ def create_interconnection_map(G, entity_types, entities):
 # ============= Streamlit UI =============
 
 st.title("🔗 Relationship Graph Explorer")
-st.markdown("Interactive network visualization - **Click nodes to expand relationships**")
+st.markdown("**Interactive network visualization** - Click nodes in the graph to expand their relationships")
 
 # Sidebar
 with st.sidebar:
@@ -433,23 +466,17 @@ with st.sidebar:
         
         map_type = st.radio(
             "Select Mode",
-            ["Interactive Expansion", "Radial Map", "Interconnection"]
+            ["Interactive (Click to Expand)", "Radial Map", "Interconnection"]
         )
         
         if map_type == "Radial Map":
             depth = st.slider("Depth", 1, 5, 2)
         
-        if map_type == "Interactive Expansion" and st.session_state.expanded_nodes:
-            if st.button("🔄 Reset Expansion"):
-                st.session_state.expanded_nodes = set()
-                if st.session_state.selected_entity:
-                    st.session_state.expanded_nodes.add(st.session_state.selected_entity)
-                st.rerun()
-        
         st.markdown("---")
         st.markdown("### 🎨 Legend")
-        st.markdown("🏢 Building = Company")
-        st.markdown("👤 Person = Individual")
+        st.markdown("🏢 **Building** = Company")
+        st.markdown("👤 **Person** = Individual")
+        st.markdown("📍 **Thick border** = Expanded/Selected")
         st.markdown("*Edge colors vary by relationship sub-type*")
 
 # Main content
@@ -484,67 +511,99 @@ else:
             entities,
             max_selections=5
         )
-    elif map_type == "Interactive Expansion":
+    else:
         st.subheader("🎯 Select Starting Entity")
         selected_entity = st.selectbox(
-            "Choose an entity to start exploring",
+            "Choose an entity to start",
             [""] + entities,
             key="entity_selector"
         )
         
+        # Reset expanded nodes when entity changes
         if selected_entity and selected_entity != st.session_state.selected_entity:
             st.session_state.selected_entity = selected_entity
             st.session_state.expanded_nodes = {selected_entity}
+        
+        if map_type == "Interactive (Click to Expand)" and selected_entity:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.info("💡 **Click any node** in the graph below to expand and show its relationships!")
+            with col2:
+                if st.button("🔄 Reset", use_container_width=True):
+                    st.session_state.expanded_nodes = {selected_entity}
+                    st.rerun()
             
-        if selected_entity:
-            st.info("💡 **How to use:** The graph shows your selected entity and its direct relationships. Click on any node in the visualization below to expand and reveal its connections!")
-            
-            # Show expand buttons for connected entities
-            if selected_entity in G:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**Connected entities (click to expand):**")
-                    connected = set(G.successors(selected_entity)) | set(G.predecessors(selected_entity))
+            # Show clickable entity list for expansion
+            with st.expander("📋 Manual Expand Options", expanded=False):
+                if selected_entity in G:
+                    connected = set()
+                    for node in st.session_state.expanded_nodes:
+                        if node in G:
+                            connected.update(G.successors(node))
+                            connected.update(G.predecessors(node))
+                    
                     unexpanded = connected - st.session_state.expanded_nodes
                     
                     if unexpanded:
-                        for entity in sorted(list(unexpanded))[:10]:
-                            if st.button(f"➕ {entity}", key=f"expand_{entity}"):
-                                st.session_state.expanded_nodes.add(entity)
-                                st.rerun()
+                        st.write("**Available entities to expand:**")
+                        cols = st.columns(3)
+                        for idx, entity in enumerate(sorted(list(unexpanded))):
+                            with cols[idx % 3]:
+                                if st.button(f"➕ {entity}", key=f"expand_{entity}", use_container_width=True):
+                                    st.session_state.expanded_nodes.add(entity)
+                                    st.rerun()
                     else:
-                        st.write("All connected entities shown")
-                
-                with col2:
-                    if len(st.session_state.expanded_nodes) > 1:
-                        st.markdown("**Expanded entities:**")
-                        for entity in sorted(list(st.session_state.expanded_nodes - {selected_entity})):
-                            st.write(f"✓ {entity}")
-    else:
-        st.subheader("Select Entity")
-        selected_entity = st.selectbox("Choose an entity", [""] + entities)
+                        st.write("All connected entities are already shown")
     
     # Generate visualization
-    if map_type == "Interactive Expansion":
+    if map_type == "Interactive (Click to Expand)":
         if selected_entity:
             with st.spinner("Generating interactive graph..."):
-                net = create_expandable_graph(G, entity_types, st.session_state.expanded_nodes, selected_entity)
+                net = create_interactive_graph(G, entity_types, st.session_state.expanded_nodes, selected_entity)
                 if net:
+                    # Save graph to HTML with custom click handler
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w') as tmp:
                         net.save_graph(tmp.name)
                         with open(tmp.name, 'r') as f:
                             html_content = f.read()
-                        st.components.v1.html(html_content, height=750)
+                        
+                        # Inject JavaScript to capture node clicks and communicate with Streamlit
+                        custom_js = """
+                        <script>
+                        network.on("click", function(params) {
+                            if (params.nodes.length > 0) {
+                                var nodeId = params.nodes[0];
+                                console.log("Node clicked:", nodeId);
+                                // Send message to parent window
+                                window.parent.postMessage({
+                                    type: 'streamlit:setComponentValue',
+                                    nodeId: nodeId
+                                }, '*');
+                            }
+                        });
+                        </script>
+                        """
+                        html_content = html_content.replace('</body>', custom_js + '</body>')
+                        
+                    st.components.v1.html(html_content, height=750, scrolling=False)
                     
                     # Entity details
                     st.markdown("---")
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("Incoming Connections", G.in_degree(selected_entity))
+                        st.metric("Selected Entity", selected_entity)
                     with col2:
-                        st.metric("Outgoing Connections", G.out_degree(selected_entity))
+                        st.metric("Incoming", G.in_degree(selected_entity))
                     with col3:
+                        st.metric("Outgoing", G.out_degree(selected_entity))
+                    with col4:
                         st.metric("Expanded Nodes", len(st.session_state.expanded_nodes))
+                    
+                    # Show expanded nodes list
+                    if len(st.session_state.expanded_nodes) > 1:
+                        with st.expander("✓ Currently Expanded Entities", expanded=False):
+                            for node in sorted(st.session_state.expanded_nodes):
+                                st.write(f"• {node}")
         else:
             st.info("Select an entity to begin exploring")
     
