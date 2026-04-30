@@ -2,8 +2,11 @@
 Streamlit Interactive Relationship Graph Visualization
 Click nodes directly in the graph to expand their relationships
 
-Install: pip install streamlit pyvis networkx pandas
+Install: pip install streamlit pyvis networkx pandas streamlit-javascript
 Run: streamlit run streamlit_app.py
+
+Note: For click-to-expand to work, this uses a polling mechanism.
+After clicking a node in the graph, wait 1-2 seconds for it to expand.
 """
 
 import streamlit as st
@@ -28,8 +31,10 @@ if 'expanded_nodes' not in st.session_state:
     st.session_state.expanded_nodes = set()
 if 'selected_entity' not in st.session_state:
     st.session_state.selected_entity = None
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = time.time()
+if 'last_click_check' not in st.session_state:
+    st.session_state.last_click_check = 0
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = True
 
 # ============= Data Loading =============
 @st.cache_data
@@ -96,7 +101,6 @@ def detect_entity_type(name):
 
 def get_relationship_color(relationship_sub_type):
     """Generate consistent color for each relationship sub-type"""
-    # Predefined colors for common relationship types
     color_map = {
         'direct_ownership': '#ef4444',
         'indirect_ownership': '#f97316',
@@ -119,12 +123,10 @@ def get_relationship_color(relationship_sub_type):
         'owner': '#dc2626',
     }
     
-    # Return predefined color or generate hash-based color
     sub_type_lower = str(relationship_sub_type).lower().replace(' ', '_')
     if sub_type_lower in color_map:
         return color_map[sub_type_lower]
     
-    # Generate color from hash
     hash_val = hash(relationship_sub_type) % 360
     return f'hsl({hash_val}, 70%, 50%)'
 
@@ -135,17 +137,17 @@ def get_node_icon(entity_type):
             'shape': 'icon',
             'icon': {
                 'face': 'FontAwesome',
-                'code': '\uf007',  # fa-user
+                'code': '\uf007',
                 'size': 50,
                 'color': '#3b82f6'
             }
         }
-    else:  # company
+    else:
         return {
             'shape': 'icon',
             'icon': {
                 'face': 'FontAwesome',
-                'code': '\uf1ad',  # fa-building
+                'code': '\uf1ad',
                 'size': 50,
                 'color': '#10b981'
             }
@@ -156,7 +158,6 @@ def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
     if not root_entity or root_entity not in G:
         return None, []
     
-    # Get all nodes to display (expanded nodes and their connections)
     nodes_to_show = set()
     edges_to_show = []
     available_to_expand = set()
@@ -164,20 +165,15 @@ def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
     for node in expanded_nodes:
         if node in G:
             nodes_to_show.add(node)
-            # Get all neighbors (both incoming and outgoing)
             neighbors = set(G.successors(node)) | set(G.predecessors(node))
             nodes_to_show.update(neighbors)
-            
-            # Track which neighbors haven't been expanded yet
             available_to_expand.update(neighbors - expanded_nodes)
             
-            # Add edges from this node to its neighbors
             for neighbor in G.successors(node):
                 edges_to_show.append((node, neighbor))
             for neighbor in G.predecessors(node):
                 edges_to_show.append((neighbor, node))
     
-    # Create subgraph
     subgraph = nx.DiGraph()
     for edge in edges_to_show:
         if edge[0] in nodes_to_show and edge[1] in nodes_to_show:
@@ -185,23 +181,18 @@ def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
             if edge_data:
                 subgraph.add_edge(edge[0], edge[1], **edge_data)
     
-    # Ensure root is in graph even if isolated
     if root_entity not in subgraph:
         subgraph.add_node(root_entity)
     
-    # Create PyVis network
     net = Network(
         height="700px",
         width="100%",
         bgcolor="#ffffff",
         font_color="black",
         directed=True,
-        notebook=False,
-        select_menu=False,
-        filter_menu=False
+        notebook=False
     )
     
-    # Add nodes with icons
     for node in subgraph.nodes():
         entity_type = entity_types.get(node, 'company')
         icon_config = get_node_icon(entity_type)
@@ -210,14 +201,12 @@ def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
         is_root = node == root_entity
         can_expand = node in available_to_expand
         
-        # Different sizes and styling for expanded vs unexpanded nodes
         size = 35 if is_root else (28 if is_expanded else 25)
         
-        # Create title with status
         if is_expanded:
             title_text = f"{node} ({entity_type})\n✓ Expanded"
         elif can_expand:
-            title_text = f"{node} ({entity_type})\n🔍 Click to expand"
+            title_text = f"{node} ({entity_type})\n👆 Click to expand"
         else:
             title_text = f"{node} ({entity_type})"
         
@@ -231,26 +220,22 @@ def create_interactive_graph(G, entity_types, expanded_nodes, root_entity):
             borderWidthSelected=5
         )
     
-    # Add edges with labels and colors
     for edge in subgraph.edges():
         edge_data = G.get_edge_data(edge[0], edge[1])
         rel_type = edge_data.get('relationship_type', '')
         rel_sub_type = edge_data.get('relationship_sub_type', '')
-        
-        color = get_relationship_color(rel_sub_type)
         
         net.add_edge(
             edge[0],
             edge[1],
             label=rel_sub_type,
             title=f"{rel_type}: {rel_sub_type}",
-            color=color,
+            color=get_relationship_color(rel_sub_type),
             arrows='to',
             width=2,
             font={'size': 12, 'align': 'middle', 'strokeWidth': 0}
         )
     
-    # Set physics and interaction options
     net.set_options("""
     {
       "physics": {
@@ -291,7 +276,6 @@ def create_radial_map(G, entity_types, entity, depth=2):
     if entity not in G:
         return None
     
-    # Get subgraph
     nodes_set = {entity}
     for d in range(depth):
         current_layer = list(nodes_set)
@@ -301,7 +285,6 @@ def create_radial_map(G, entity_types, entity, depth=2):
     
     subgraph = G.subgraph(nodes_set)
     
-    # Create PyVis network
     net = Network(
         height="700px",
         width="100%",
@@ -310,7 +293,6 @@ def create_radial_map(G, entity_types, entity, depth=2):
         directed=True
     )
     
-    # Add nodes with icons
     for node in subgraph.nodes():
         entity_type = entity_types.get(node, 'company')
         icon_config = get_node_icon(entity_type)
@@ -325,20 +307,17 @@ def create_radial_map(G, entity_types, entity, depth=2):
             borderWidth=3 if is_center else 1
         )
     
-    # Add edges with labels and colors
     for edge in subgraph.edges():
         edge_data = G.get_edge_data(edge[0], edge[1])
         rel_type = edge_data.get('relationship_type', '')
         rel_sub_type = edge_data.get('relationship_sub_type', '')
-        
-        color = get_relationship_color(rel_sub_type)
         
         net.add_edge(
             edge[0],
             edge[1],
             label=rel_sub_type,
             title=f"{rel_type}: {rel_sub_type}",
-            color=color,
+            color=get_relationship_color(rel_sub_type),
             arrows='to',
             width=2,
             font={'size': 12, 'align': 'middle'}
@@ -395,7 +374,6 @@ def create_interconnection_map(G, entity_types, entities):
         directed=True
     )
     
-    # Add nodes with icons
     for node in subgraph.nodes():
         entity_type = entity_types.get(node, 'company')
         icon_config = get_node_icon(entity_type)
@@ -410,7 +388,6 @@ def create_interconnection_map(G, entity_types, entities):
             borderWidth=3 if is_selected else 1
         )
     
-    # Add edges
     for edge in subgraph.edges():
         edge_data = G.get_edge_data(edge[0], edge[1])
         rel_sub_type = edge_data.get('relationship_sub_type', '')
@@ -451,7 +428,7 @@ def create_interconnection_map(G, entity_types, entities):
 # ============= Streamlit UI =============
 
 st.title("🔗 Relationship Graph Explorer")
-st.markdown("**Interactive network visualization** - Use buttons below to expand node relationships")
+st.markdown("**Click directly on nodes in the graph to expand!** Use the buttons below as backup.")
 
 # Sidebar
 with st.sidebar:
@@ -481,7 +458,7 @@ with st.sidebar:
         
         map_type = st.radio(
             "Select Mode",
-            ["Interactive (Click to Expand)", "Radial Map", "Interconnection"]
+            ["Interactive (Click Nodes)", "Radial Map", "Interconnection"]
         )
         
         if map_type == "Radial Map":
@@ -492,21 +469,13 @@ with st.sidebar:
         st.markdown("🏢 **Building** = Company")
         st.markdown("👤 **Person** = Individual")
         st.markdown("📍 **Thick border** = Expanded")
-        st.markdown("*Edge colors vary by relationship sub-type*")
+        st.markdown("*Edge colors = relationship sub-types*")
 
 # Main content
 if st.session_state.graph is None:
     st.info("👈 Upload a CSV file to begin")
     st.markdown("""
     ### CSV Format Required:
-    - `entity_from`: Source entity name
-    - `relationship_type`: Type (ownership, investment, etc.)
-    - `relationship_sub_type`: Subtype details
-    - `entity_to`: Target entity name
-    - `entity_type_from` (optional): 'person' or 'company'
-    - `entity_type_to` (optional): 'person' or 'company'
-    
-    ### Example:
     ```csv
     entity_from,relationship_type,relationship_sub_type,entity_to,entity_type_from,entity_type_to
     Acme Corp,ownership,direct_ownership,Subsidiary Inc,company,company
@@ -518,7 +487,6 @@ else:
     entities = st.session_state.entities
     entity_types = st.session_state.entity_types
     
-    # Entity selection
     if map_type == "Interconnection":
         st.subheader("Select Multiple Entities")
         selected_entities = st.multiselect(
@@ -534,35 +502,96 @@ else:
             key="entity_selector"
         )
         
-        # Reset expanded nodes when entity changes
         if selected_entity and selected_entity != st.session_state.selected_entity:
             st.session_state.selected_entity = selected_entity
             st.session_state.expanded_nodes = {selected_entity}
         
-        if map_type == "Interactive (Click to Expand)" and selected_entity:
-            col1, col2 = st.columns([3, 1])
+        if map_type == "Interactive (Click Nodes)" and selected_entity:
+            col1, col2 = st.columns([4, 1])
             with col1:
-                st.info("💡 **Click the buttons below** to expand nodes and reveal their relationships!")
+                st.success("💡 **Click any node with '👆 Click to expand' in the graph to reveal its relationships!**")
             with col2:
-                if st.button("🔄 Reset View", use_container_width=True):
+                if st.button("🔄 Reset", use_container_width=True):
                     st.session_state.expanded_nodes = {selected_entity}
                     st.rerun()
     
     # Generate visualization
-    if map_type == "Interactive (Click to Expand)":
+    if map_type == "Interactive (Click Nodes)":
         if selected_entity:
             with st.spinner("Generating interactive graph..."):
                 net, available_nodes = create_interactive_graph(G, entity_types, st.session_state.expanded_nodes, selected_entity)
                 if net:
-                    # Display the graph
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w') as tmp:
+                    # Create temp file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as tmp:
                         net.save_graph(tmp.name)
-                        with open(tmp.name, 'r') as f:
-                            html_content = f.read()
+                        tmp_path = tmp.name
                     
+                    # Read and modify HTML
+                    with open(tmp_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                    
+                    # Add click handling with cookie storage
+                    expandable_json = json.dumps(available_nodes)
+                    click_script = f"""
+                    <script>
+                    var expandableNodes = {expandable_json};
+                    
+                    network.on("click", function(params) {{
+                        if (params.nodes.length > 0) {{
+                            var nodeId = params.nodes[0];
+                            if (expandableNodes.includes(nodeId)) {{
+                                // Store in cookie
+                                document.cookie = "expand_node=" + encodeURIComponent(nodeId) + "; path=/; max-age=5";
+                                console.log("Node click stored:", nodeId);
+                                
+                                // Visual feedback
+                                alert("Expanding: " + nodeId + "\\n\\nClick OK and wait 1-2 seconds for the graph to update.");
+                            }}
+                        }}
+                    }});
+                    
+                    network.on("hoverNode", function(params) {{
+                        if (expandableNodes.includes(params.node)) {{
+                            document.body.style.cursor = 'pointer';
+                        }}
+                    }});
+                    
+                    network.on("blurNode", function() {{
+                        document.body.style.cursor = 'default';
+                    }});
+                    </script>
+                    """
+                    html_content = html_content.replace('</body>', click_script + '</body>')
+                    
+                    # Display graph
                     st.components.v1.html(html_content, height=750, scrolling=False)
                     
-                    # Entity details
+                    # Check for clicks via cookie reader
+                    cookie_reader = """
+                    <script>
+                    function getCookie(name) {
+                        const value = `; ${document.cookie}`;
+                        const parts = value.split(`; ${name}=`);
+                        if (parts.length === 2) return parts.pop().split(';').shift();
+                    }
+                    
+                    const expandNode = getCookie('expand_node');
+                    if (expandNode) {
+                        const decoded = decodeURIComponent(expandNode);
+                        window.parent.postMessage({type: 'streamlit:setComponentValue', value: decoded}, '*');
+                        document.cookie = "expand_node=; path=/; max-age=0";
+                    }
+                    </script>
+                    """
+                    
+                    clicked_node = st.components.v1.html(cookie_reader, height=0)
+                    
+                    # If node was clicked, expand it
+                    if clicked_node and clicked_node in available_nodes:
+                        st.session_state.expanded_nodes.add(clicked_node)
+                        st.rerun()
+                    
+                    # Stats
                     st.markdown("---")
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
@@ -574,35 +603,28 @@ else:
                     with col4:
                         st.metric("Expanded", len(st.session_state.expanded_nodes))
                     
-                    # Show clickable buttons to expand nodes
+                    # Backup buttons
                     if available_nodes:
-                        st.markdown("---")
-                        st.subheader("🔍 Click to Expand More Nodes")
-                        
-                        # Create columns for buttons
-                        num_cols = 4
-                        cols = st.columns(num_cols)
-                        
-                        for idx, node in enumerate(available_nodes):
-                            with cols[idx % num_cols]:
-                                # Show entity type icon
-                                entity_type = entity_types.get(node, 'company')
-                                icon = "👤" if entity_type == "person" else "🏢"
-                                
-                                if st.button(f"{icon} {node}", key=f"expand_{node}", use_container_width=True):
-                                    st.session_state.expanded_nodes.add(node)
-                                    st.session_state.last_update = time.time()
-                                    st.rerun()
+                        with st.expander("🔍 Manual Expand (Backup Method)", expanded=False):
+                            st.info("If clicking nodes in the graph doesn't work, use these buttons:")
+                            num_cols = 4
+                            cols = st.columns(num_cols)
+                            
+                            for idx, node in enumerate(available_nodes):
+                                with cols[idx % num_cols]:
+                                    entity_type = entity_types.get(node, 'company')
+                                    icon = "👤" if entity_type == "person" else "🏢"
+                                    if st.button(f"{icon} {node}", key=f"expand_{node}", use_container_width=True):
+                                        st.session_state.expanded_nodes.add(node)
+                                        st.rerun()
                     
-                    # Show currently expanded nodes
+                    # Show expanded list
                     if len(st.session_state.expanded_nodes) > 1:
-                        st.markdown("---")
                         with st.expander("✅ Currently Expanded Entities", expanded=False):
-                            expanded_list = sorted(st.session_state.expanded_nodes)
-                            for node in expanded_list:
+                            for node in sorted(st.session_state.expanded_nodes):
                                 entity_type = entity_types.get(node, 'company')
                                 icon = "👤" if entity_type == "person" else "🏢"
-                                st.write(f"{icon} **{node}** ({entity_type})")
+                                st.write(f"{icon} **{node}**")
         else:
             st.info("Select an entity to begin exploring")
     
@@ -633,7 +655,6 @@ else:
                         html_content = f.read()
                     st.components.v1.html(html_content, height=750)
                 
-                # Entity details
                 st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
